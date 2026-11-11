@@ -1,48 +1,85 @@
-export async function POST(req: Request) {
+export const runtime = "nodejs";
+
+export async function POST(request: Request) {
+  const apiKey = process.env.REMOVE_BG_API_KEY;
+
+  if (!apiKey) {
+    return Response.json(
+      {
+        message: "Layanan hapus background belum dikonfigurasi.",
+      },
+      { status: 503 },
+    );
+  }
+
   try {
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
+    const incoming = await request.formData();
+    const file = incoming.get("file");
 
-    if (!file) {
-      return new Response("File is required", { status: 400 });
+    if (!(file instanceof File)) {
+      return Response.json(
+        {
+          message: "Foto wajib disertakan.",
+        },
+        { status: 400 },
+      );
     }
 
-    const apiKey = process.env.REMOVE_BG_API_KEY;
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
 
-    if (!apiKey) {
-      return new Response("Missing REMOVE_BG_API_KEY", { status: 500 });
+    if (
+      !allowedTypes.includes(file.type) ||
+      file.size > 10 * 1024 * 1024 ||
+      file.size === 0
+    ) {
+      return Response.json(
+        {
+          message: "Gunakan JPG, PNG, atau WebP dengan ukuran maksimal 10 MB.",
+        },
+        { status: 400 },
+      );
     }
 
-    const removeBgForm = new FormData();
-    removeBgForm.append("image_file", file);
-    removeBgForm.append("size", "auto");
-    removeBgForm.append("format", "png");
+    const body = new FormData();
 
-    const response = await fetch("https://api.remove.bg/v1.0/removebg", {
+    body.append("image_file", file);
+    body.append("size", "auto");
+    body.append("format", "png");
+    body.append("crop", "false");
+
+    const upstream = await fetch("https://api.remove.bg/v1.0/removebg", {
       method: "POST",
       headers: {
         "X-Api-Key": apiKey,
       },
-      body: removeBgForm,
+      body,
+      signal: request.signal,
+      cache: "no-store",
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      return new Response(errorText || "remove.bg request failed", {
-        status: response.status,
-      });
+    if (!upstream.ok) {
+      return Response.json(
+        {
+          message: "Foto belum berhasil diproses.",
+        },
+        {
+          status: upstream.status === 429 ? 429 : 502,
+        },
+      );
     }
 
-    const blob = await response.blob();
-
-    return new Response(blob, {
-      status: 200,
+    return new Response(upstream.body, {
       headers: {
         "Content-Type": "image/png",
+        "Cache-Control": "no-store",
       },
     });
-  } catch (error) {
-    console.error("Remove BG API route error:", error);
-    return new Response("Internal server error", { status: 500 });
+  } catch {
+    return Response.json(
+      {
+        message: "Layanan hapus background belum dapat dihubungi.",
+      },
+      { status: 503 },
+    );
   }
 }

@@ -1,90 +1,193 @@
 "use client";
 
-import { useCallback, useState } from "react";
-import Cropper, { Area } from "react-easy-crop";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+
+import Cropper, { type Area } from "react-easy-crop";
+
 import { getCroppedImg } from "@/lib/crop-image";
+import type { CropSelection } from "@/types/id-card";
+
+import { primaryButton, secondaryButton } from "@/components/nametag/editor-ui";
 
 type PhotoCropperProps = {
   image: string;
+  aspect?: number;
+  initialSelection?: CropSelection | null;
   onCancel: () => void;
-  onApply: (croppedImage: string) => void;
+  onApply: (image: string, selection: CropSelection) => void | Promise<void>;
 };
 
-export default function PhotoCropper({
+export default function PhotoCropper(props: PhotoCropperProps) {
+  return (
+    <CropSession key={`${props.image}-${props.aspect ?? 3 / 4}`} {...props} />
+  );
+}
+
+function CropSession({
   image,
+  aspect = 3 / 4,
+  initialSelection,
   onCancel,
   onApply,
 }: PhotoCropperProps) {
-  const [crop, setCrop] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1.2);
-  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
+  const zoomId = useId();
 
-  const onCropComplete = useCallback((_: Area, croppedPixels: Area) => {
-    setCroppedAreaPixels(croppedPixels);
+  const locked = useRef(false);
+  const mounted = useRef(true);
+
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+
+  const [area, setArea] = useState<Area | null>(null);
+  const [pixels, setPixels] = useState<Area | null>(null);
+
+  const [saving, setSaving] = useState(false);
+  const [resetVersion, setResetVersion] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const savedArea =
+    resetVersion === 0 && initialSelection?.aspect === aspect
+      ? initialSelection.area
+      : undefined;
+
+  useEffect(() => {
+    mounted.current = true;
+
+    return () => {
+      mounted.current = false;
+    };
   }, []);
 
-  const handleApply = async () => {
-    if (!croppedAreaPixels) return;
+  const onCropComplete = useCallback((percent: Area, pixelArea: Area) => {
+    setArea(percent);
+    setPixels(pixelArea);
+  }, []);
+
+  function resetCrop() {
+    setCrop({ x: 0, y: 0 });
+    setZoom(1);
+    setArea(null);
+    setPixels(null);
+    setResetVersion((value) => value + 1);
+    setError(null);
+  }
+
+  async function apply() {
+    if (!area || !pixels || locked.current) return;
+
+    locked.current = true;
+
+    setSaving(true);
+    setError(null);
 
     try {
-      setIsSaving(true);
-      const croppedImage = await getCroppedImg(image, croppedAreaPixels);
-      onApply(croppedImage);
+      const imageData = await getCroppedImg(image, pixels);
+
+      if (mounted.current) {
+        await onApply(imageData, {
+          area,
+          aspect,
+        });
+      }
     } catch (error) {
-      console.error(error);
-      alert("Gagal crop foto.");
+      if (mounted.current) {
+        setError(
+          error instanceof Error ? error.message : "Crop belum berhasil.",
+        );
+      }
     } finally {
-      setIsSaving(false);
+      locked.current = false;
+
+      if (mounted.current) {
+        setSaving(false);
+      }
     }
-  };
+  }
 
   return (
-    <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="relative h-[320px] w-full overflow-hidden rounded-2xl bg-slate-900">
+    <div className="space-y-4" aria-busy={saving}>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs leading-5 text-stone-500">
+          Atur dari foto asli. Posisi crop sebelumnya akan dipulihkan jika
+          rasionya sama.
+        </p>
+
+        <button
+          type="button"
+          disabled={saving}
+          onClick={resetCrop}
+          className="shrink-0 text-xs font-medium text-red-800 hover:underline disabled:opacity-40"
+        >
+          Reset crop
+        </button>
+      </div>
+
+      <div
+        className={`relative h-80 overflow-hidden rounded-xl bg-stone-900 ${
+          saving ? "pointer-events-none opacity-60" : ""
+        }`}
+      >
         <Cropper
+          key={resetVersion}
           image={image}
           crop={crop}
           zoom={zoom}
-          aspect={3 / 4}
+          aspect={aspect}
+          minZoom={1}
+          maxZoom={3}
+          initialCroppedAreaPercentages={savedArea}
           onCropChange={setCrop}
           onZoomChange={setZoom}
           onCropComplete={onCropComplete}
           objectFit="contain"
+          showGrid
         />
       </div>
 
       <div>
-        <label className="mb-2 block text-sm font-semibold text-slate-800">
-          Zoom
-        </label>
+        <div className="mb-2 flex justify-between text-xs text-stone-600">
+          <label htmlFor={zoomId}>Perbesar foto</label>
+          <span>{zoom.toFixed(1)}×</span>
+        </div>
+
         <input
+          id={zoomId}
           type="range"
           min={1}
           max={3}
-          step={0.1}
+          step={0.05}
           value={zoom}
-          onChange={(e) => setZoom(Number(e.target.value))}
-          className="w-full"
+          disabled={saving}
+          onChange={(event) => {
+            setZoom(Number(event.target.value));
+          }}
+          className="w-full accent-red-800"
         />
       </div>
 
-      <div className="flex gap-3">
+      {error && (
+        <p role="alert" className="text-sm text-red-800">
+          {error}
+        </p>
+      )}
+
+      <div className="grid grid-cols-2 gap-3">
         <button
           type="button"
+          disabled={saving}
           onClick={onCancel}
-          className="inline-flex w-full items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+          className={secondaryButton}
         >
           Batal
         </button>
 
         <button
           type="button"
-          onClick={handleApply}
-          disabled={isSaving}
-          className="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-60"
+          disabled={saving || !pixels || !area}
+          onClick={() => void apply()}
+          className={primaryButton}
         >
-          {isSaving ? "Memproses..." : "Gunakan Foto"}
+          {saving ? "Memproses…" : "Gunakan foto"}
         </button>
       </div>
     </div>

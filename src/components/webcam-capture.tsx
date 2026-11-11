@@ -1,144 +1,233 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import {
+  EditorIcon,
+  primaryButton,
+  secondaryButton,
+} from "./nametag/editor-ui";
 
 type WebcamCaptureProps = {
-  onCapture: (imageDataUrl: string) => void;
+  onCapture: (image: string) => void;
+  disabled?: boolean;
 };
 
-export default function WebcamCapture({ onCapture }: WebcamCaptureProps) {
+function cameraMessage(error: unknown): string {
+  if (error instanceof DOMException) {
+    if (["NotAllowedError", "SecurityError"].includes(error.name)) {
+      return "Izin kamera ditolak. Izinkan akses kamera melalui pengaturan browser.";
+    }
+
+    if (error.name === "NotFoundError") {
+      return "Kamera tidak ditemukan di perangkat ini.";
+    }
+
+    if (error.name === "NotReadableError") {
+      return "Kamera sedang dipakai aplikasi lain. Tutup aplikasi tersebut lalu coba lagi.";
+    }
+  }
+
+  return "Kamera belum bisa dibuka. Coba lagi atau unggah foto dari perangkat.";
+}
+
+export default function WebcamCapture({
+  onCapture,
+  disabled = false,
+}: WebcamCaptureProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const requestId = useRef(0);
 
-  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const startCamera = async () => {
-    try {
-      setError(null);
+  const stopCamera = useCallback(() => {
+    requestId.current += 1;
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "user",
-        },
-        audio: false,
-      });
-
-      streamRef.current = stream;
-      setIsCameraOpen(true);
-    } catch (err) {
-      console.error(err);
-      setError("Tidak bisa mengakses kamera. Pastikan izin kamera diberikan.");
-    }
-  };
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
 
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
 
-    setIsCameraOpen(false);
-  };
+    setOpen(false);
+    setStarting(false);
+    setReady(false);
+  }, []);
 
-  const capturePhoto = () => {
+  useEffect(() => {
+    return () => {
+      requestId.current += 1;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!open || !videoRef.current || !streamRef.current) return;
+
     const video = videoRef.current;
-    if (!video) return;
+    const token = requestId.current;
 
-    if (!video.videoWidth || !video.videoHeight) {
+    video.srcObject = streamRef.current;
+
+    void video.play().catch(() => {
+      if (token !== requestId.current) return;
+
+      stopCamera();
+      setError("Video kamera tidak dapat diputar. Silakan buka kamera lagi.");
+    });
+  }, [open, stopCamera]);
+
+  async function startCamera() {
+    if (disabled || starting || open) return;
+
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       setError(
-        "Video kamera belum siap. Coba tunggu sebentar lalu ambil foto lagi.",
+        "Kamera memerlukan HTTPS atau localhost. Kamu tetap bisa mengunggah foto.",
       );
       return;
     }
 
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    const token = ++requestId.current;
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    setStarting(true);
+    setError(null);
 
-    // Balik hasil capture supaya tidak mirror
-    ctx.translate(canvas.width, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { ideal: 1280 },
+          height: { ideal: 960 },
+        },
+        audio: false,
+      });
 
-    const imageDataUrl = canvas.toDataURL("image/png");
-    onCapture(imageDataUrl);
-
-    stopCamera();
-  };
-
-  useEffect(() => {
-    const attachStreamToVideo = async () => {
-      if (!isCameraOpen || !videoRef.current || !streamRef.current) return;
-
-      videoRef.current.srcObject = streamRef.current;
-
-      try {
-        await videoRef.current.play();
-      } catch (err) {
-        console.error("Failed to play webcam stream:", err);
+      if (token !== requestId.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
       }
-    };
 
-    attachStreamToVideo();
-  }, [isCameraOpen]);
+      streamRef.current = stream;
+      setOpen(true);
+    } catch (error) {
+      if (token === requestId.current) {
+        setError(cameraMessage(error));
+      }
+    } finally {
+      if (token === requestId.current) {
+        setStarting(false);
+      }
+    }
+  }
 
-  useEffect(() => {
-    return () => {
+  function capture() {
+    const video = videoRef.current;
+
+    if (disabled || !ready || !video?.videoWidth || !video.videoHeight) {
+      return;
+    }
+
+    try {
+      const canvas = document.createElement("canvas");
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      const context = canvas.getContext("2d");
+
+      if (!context) {
+        throw new Error("Canvas tidak tersedia.");
+      }
+
+      // Preview bercermin; file foto memakai orientasi asli kamera.
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const image = canvas.toDataURL("image/png");
+
       stopCamera();
-    };
-  }, []);
+      onCapture(image);
+    } catch {
+      setError("Foto belum berhasil diambil. Silakan coba lagi.");
+    }
+  }
 
   return (
     <div className="space-y-3">
-      {!isCameraOpen ? (
-        <button
-          type="button"
-          onClick={startCamera}
-          className="inline-flex w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700"
-        >
-          Buka Kamera
-        </button>
-      ) : (
+      {open ? (
         <>
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-black">
+          <div className="overflow-hidden rounded-xl bg-stone-900">
             <video
               ref={videoRef}
               autoPlay
               playsInline
               muted
-              className="block h-auto w-full scale-x-[-1]"
+              onLoadedData={() => setReady(true)}
+              className="block aspect-[4/3] w-full -scale-x-100 object-cover"
             />
           </div>
 
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={capturePhoto}
-              className="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
-            >
-              Ambil Foto
-            </button>
+          <p className="text-xs text-stone-500">
+            Preview bercermin. Hasil foto mengikuti orientasi asli kamera.
+          </p>
 
+          <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
               onClick={stopCamera}
-              className="inline-flex w-full items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              className={secondaryButton}
             >
-              Tutup Kamera
+              Tutup kamera
+            </button>
+
+            <button
+              type="button"
+              disabled={disabled || !ready}
+              onClick={capture}
+              className={primaryButton}
+            >
+              <EditorIcon name="camera" className="h-4 w-4" />
+              Ambil foto
             </button>
           </div>
         </>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => void startCamera()}
+            disabled={disabled || starting}
+            className={`${secondaryButton} w-full py-5`}
+          >
+            <EditorIcon name="camera" className="h-5 w-5" />
+            {starting ? "Menunggu izin kamera…" : "Buka kamera"}
+          </button>
+
+          {starting && (
+            <button
+              type="button"
+              onClick={stopCamera}
+              className="text-xs text-stone-500 hover:underline"
+            >
+              Batalkan
+            </button>
+          )}
+        </>
       )}
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && (
+        <p
+          role="alert"
+          className="rounded-lg bg-red-50 p-3 text-sm leading-5 text-red-900"
+        >
+          {error}
+        </p>
+      )}
     </div>
   );
 }

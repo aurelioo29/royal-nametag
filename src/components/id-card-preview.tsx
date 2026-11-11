@@ -1,151 +1,134 @@
+/* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { forwardRef } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
+
+import { renderNametag } from "@/lib/render-nametag";
 import { templateConfigs } from "@/lib/templates";
+
 import type { IdCardData } from "@/types/id-card";
 
 type IdCardPreviewProps = {
   data: IdCardData;
-  isRemovingBg?: boolean;
   nameFontSizeOverride?: number | null;
   roleFontSizeOverride?: number | null;
 };
 
-const getDynamicFontSize = (text: string, baseSize: number, minSize = 12) => {
-  const length = text.trim().length;
-
-  if (length <= 12) return baseSize;
-  if (length <= 18) return Math.max(baseSize - 1, minSize);
-  if (length <= 24) return Math.max(baseSize - 2, minSize);
-  if (length <= 30) return Math.max(baseSize - 3, minSize);
-  if (length <= 36) return Math.max(baseSize - 4, minSize);
-
-  return minSize;
-};
-
 const IdCardPreview = forwardRef<HTMLDivElement, IdCardPreviewProps>(
-  (
-    {
-      data,
-      isRemovingBg = false,
-      nameFontSizeOverride = null,
-      roleFontSizeOverride = null,
-    },
+  function IdCardPreview(
+    { data, nameFontSizeOverride = null, roleFontSizeOverride = null },
     ref,
-  ) => {
+  ) {
     const config = templateConfigs[data.type];
 
-    const photoSrc =
-      data.removeBackground && data.processedPhoto
-        ? data.processedPhoto
-        : data.originalPhoto;
+    const canvasRef = useRef<HTMLCanvasElement>(null);
 
-    const nameText = data.name || "Nama Lengkap";
-    const roleText = data.role || "Role";
+    const [error, setError] = useState<string | null>(null);
 
-    const nameFontSize =
-      nameFontSizeOverride ??
-      getDynamicFontSize(
-        nameText,
-        config.name.fontSize,
-        config.name.minFontSize ?? 12,
-      );
+    const [overflow, setOverflow] = useState(false);
 
-    const roleFontSize =
-      config.role && data.type === "pegawai"
-        ? (roleFontSizeOverride ??
-          getDynamicFontSize(
-            roleText,
-            config.role.fontSize,
-            config.role.minFontSize ?? 10,
-          ))
-        : undefined;
+    const [photoUpscaled, setPhotoUpscaled] = useState(false);
+
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+      let cancelled = false;
+
+      setLoading(true);
+      setError(null);
+
+      void renderNametag({
+        data,
+        nameFontSize: nameFontSizeOverride,
+        roleFontSize: roleFontSizeOverride,
+      })
+        .then((result) => {
+          if (cancelled || !canvasRef.current) {
+            return;
+          }
+
+          const target = canvasRef.current;
+
+          target.width = result.canvas.width;
+          target.height = result.canvas.height;
+
+          target.getContext("2d")?.drawImage(result.canvas, 0, 0);
+
+          setOverflow(result.textOverflow);
+          setPhotoUpscaled(result.photoUpscaled);
+          setLoading(false);
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return;
+
+          setError(
+            error instanceof Error
+              ? error.message
+              : "Preview belum dapat dibuat.",
+          );
+
+          setLoading(false);
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }, [data, nameFontSizeOverride, roleFontSizeOverride]);
 
     return (
       <div
-        ref={ref}
-        className="relative overflow-hidden rounded-2xl bg-white shadow-xl"
         style={{
-          width: `${config.cardWidth}px`,
-          height: `${config.cardHeight}px`,
-          backgroundImage: `url(${config.background})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          backgroundRepeat: "no-repeat",
+          width: config.cardWidth,
         }}
       >
-        {isRemovingBg && (
-          <div className="absolute right-3 top-3 z-20 rounded-full bg-black/70 px-3 py-1 text-xs font-medium text-white">
-            Removing BG...
-          </div>
-        )}
-
         <div
-          className="absolute overflow-hidden bg-transparent"
+          ref={ref}
+          data-text-overflow={overflow}
+          className="relative overflow-hidden bg-white"
           style={{
-            top: `${config.photo.top}px`,
-            left: `${config.photo.left}px`,
-            width: `${config.photo.width}px`,
-            height: `${config.photo.height}px`,
+            width: config.cardWidth,
+            height: config.cardHeight,
           }}
         >
-          {photoSrc ? (
-            <img
-              src={photoSrc}
-              alt={data.name || "Uploaded photo"}
-              className="h-full w-full object-contain object-bottom"
-            />
-          ) : (
-            <div className="grid h-full w-full place-items-center text-sm text-neutral-500">
-              Foto
+          <img
+            data-template-image
+            src={config.background}
+            alt=""
+            className="hidden"
+          />
+
+          <canvas
+            ref={canvasRef}
+            role="img"
+            aria-label={`Preview nametag ` + (data.name || "belum diisi")}
+            className="block h-full w-full"
+          />
+
+          {(loading || error) && (
+            <div className="absolute inset-0 grid place-items-center bg-white/95 p-5 text-center text-xs leading-5 text-stone-600">
+              {error || "Menyiapkan preview…"}
             </div>
           )}
         </div>
 
-        <div
-          className="absolute text-center"
-          style={{
-            top: `${config.name.top}px`,
-            left: `${config.name.left}px`,
-            width: `${config.name.width}px`,
-            fontFamily: config.name.fontFamily,
-            fontWeight: config.name.fontWeight,
-            color: config.name.color,
-            fontSize: `${nameFontSize}px`,
-            lineHeight: 1.1,
-            WebkitTextStrokeWidth: config.name.textStroke,
-            WebkitTextStrokeColor: config.name.textStrokeColor,
-            textShadow: config.name.textShadow,
-          }}
-        >
-          {nameText}
-        </div>
-
-        {data.type === "pegawai" && config.role && (
-          <div
-            className="absolute text-center"
-            style={{
-              top: `${config.role.top}px`,
-              left: `${config.role.left}px`,
-              width: `${config.role.width}px`,
-              fontFamily: config.role.fontFamily,
-              fontWeight: config.role.fontWeight,
-              color: config.role.color,
-              fontSize: `${roleFontSize}px`,
-              lineHeight: 1.1,
-              WebkitTextStrokeWidth: config.role.textStroke,
-              WebkitTextStrokeColor: config.role.textStrokeColor,
-              textShadow: config.role.textShadow,
-            }}
+        {overflow && (
+          <p
+            role="alert"
+            className="bg-red-50 p-3 text-xs leading-5 text-red-900"
           >
-            {roleText}
-          </div>
+            Teks melewati area kartu. Sesuaikan ukuran atau ringkas isian.
+          </p>
+        )}
+
+        {photoUpscaled && !error && (
+          <p className="bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+            Resolusi foto lebih kecil dari area cetaknya. Gunakan foto asli yang
+            lebih besar atau kurangi zoom untuk hasil lebih tajam.
+          </p>
         )}
       </div>
     );
   },
 );
-
-IdCardPreview.displayName = "IdCardPreview";
 
 export default IdCardPreview;
